@@ -285,7 +285,8 @@ function attachMainWindowHandlers(windowInstance) {
   const sessionContext = {
     window: windowInstance,
     replayingDepth: 0,
-    forceClosing: false
+    forceClosing: false,
+    insertTextQueue: Promise.resolve()
   };
 
   mainWindowSessionContext = sessionContext;
@@ -620,7 +621,8 @@ function attachSessionHandlers(windowInstance) {
   const sessionContext = {
     window: windowInstance,
     replayingDepth: 0,
-    forceClosing: false
+    forceClosing: false,
+    insertTextQueue: Promise.resolve()
   };
 
   sessionWindows.set(windowInstance.webContents.id, sessionContext);
@@ -893,31 +895,37 @@ function registerIpcHandlers() {
       return { ok: false };
     }
 
-    logger.info('Renderer requested direct text insert', {
-      senderId: event.sender.id,
-      reason: payload.reason,
-      length: text.length,
-      textSample: text.slice(0, 16)
-    });
+    sessionContext.insertTextQueue = sessionContext.insertTextQueue
+      .catch(() => null)
+      .then(async () => {
+        try {
+          if (!sessionContext.window || sessionContext.window.isDestroyed()) {
+            return {
+              ok: false,
+              error: 'window-destroyed'
+            };
+          }
 
-    try {
-      sendToSessionRenderer(sessionContext, 'session:focus-remote');
-      await delay(30);
-      sessionContext.window.focus();
-      await delay(10);
-      await Promise.resolve(sessionContext.window.webContents.insertText(text));
-      return { ok: true };
-    } catch (error) {
-      logger.warn('Direct text insert failed', {
-        senderId: event.sender.id,
-        reason: payload.reason,
-        message: error.message
+          sendToSessionRenderer(sessionContext, 'session:focus-remote');
+          await delay(20);
+          sessionContext.window.focus();
+          await delay(10);
+          await Promise.resolve(sessionContext.window.webContents.insertText(text));
+          return { ok: true };
+        } catch (error) {
+          logger.warn('Direct text insert failed', {
+            senderId: event.sender.id,
+            reason: payload.reason,
+            message: error.message
+          });
+          return {
+            ok: false,
+            error: error.message
+          };
+        }
       });
-      return {
-        ok: false,
-        error: error.message
-      };
-    }
+
+    return sessionContext.insertTextQueue;
   });
 
   ipcMain.on('session:toggle-fullscreen', (event) => {

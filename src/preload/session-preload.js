@@ -33,6 +33,7 @@ const state = {
   lastShortcutAssistAt: 0,
   pendingShortcutAssistText: '',
   pendingShortcutAssistAt: 0,
+  programmaticShortcutInserts: [],
   lastRemoteFocusAt: 0,
   lastRemoteFocusLogAt: 0,
   lastStatus: '会话窗口已接管快捷键。'
@@ -166,14 +167,6 @@ function rememberShortcutContext(text, source) {
   const shouldAppend = containsCjkText(text) || /[\u3000-\u303f\uff00-\uffef]/.test(text);
   state.shortcutContextText = shouldAppend ? `${state.shortcutContextText}${text}`.slice(-16) : text.slice(-16);
   state.shortcutContextUpdatedAt = Date.now();
-
-  if (shouldAppend) {
-    log('info', 'Updated shortcut input context', {
-      source,
-      text,
-      context: state.shortcutContextText
-    });
-  }
 }
 
 function hasRecentShortcutCjkContext() {
@@ -245,6 +238,42 @@ function finishShortcutAssist(text, { committed = false } = {}) {
   }
 }
 
+function pruneProgrammaticShortcutInserts() {
+  const now = Date.now();
+  state.programmaticShortcutInserts = state.programmaticShortcutInserts.filter(
+    (entry) => now - entry.at < SHORTCUT_ASSIST_PENDING_MS
+  );
+}
+
+function markProgrammaticShortcutInsert(text) {
+  pruneProgrammaticShortcutInserts();
+  state.programmaticShortcutInserts.push({
+    text,
+    at: Date.now()
+  });
+}
+
+function consumeProgrammaticShortcutInsert(text) {
+  pruneProgrammaticShortcutInserts();
+  const index = state.programmaticShortcutInserts.findIndex((entry) => entry.text === text);
+
+  if (index === -1) {
+    return false;
+  }
+
+  state.programmaticShortcutInserts.splice(index, 1);
+  return true;
+}
+
+function clearProgrammaticShortcutInsert(text) {
+  pruneProgrammaticShortcutInserts();
+  const index = state.programmaticShortcutInserts.findIndex((entry) => entry.text === text);
+
+  if (index !== -1) {
+    state.programmaticShortcutInserts.splice(index, 1);
+  }
+}
+
 async function handleShortcutCommittedPunctuation(text, reason, event = null, allowAsciiContext = false) {
   if (state.mode !== 'shortcut' || !state.autoShortcutPunctuation) {
     return false;
@@ -267,13 +296,6 @@ async function handleShortcutCommittedPunctuation(text, reason, event = null, al
   if (typeof event?.stopPropagation === 'function') {
     event.stopPropagation();
   }
-
-  log('info', 'Intercepted committed shortcut punctuation for automatic text assist', {
-    reason,
-    text,
-    converted,
-    context: state.shortcutContextText
-  });
 
   beginShortcutAssist(converted);
 
@@ -422,6 +444,10 @@ function installShortcutInputTracking() {
       state.shortcutImeActive = false;
       const text = typeof event.data === 'string' ? event.data : '';
 
+      if (consumeProgrammaticShortcutInsert(text)) {
+        return;
+      }
+
       if (containsCjkText(text)) {
         rememberShortcutContext(text, 'compositionend');
       }
@@ -442,6 +468,10 @@ function installShortcutInputTracking() {
 
       const text = typeof event.data === 'string' ? event.data : '';
 
+      if (consumeProgrammaticShortcutInsert(text)) {
+        return;
+      }
+
       if (!isPotentialShortcutPunctuationText(text)) {
         return;
       }
@@ -461,6 +491,10 @@ function installShortcutInputTracking() {
       const text = typeof event.data === 'string' ? event.data : '';
 
       if (!text) {
+        return;
+      }
+
+      if (consumeProgrammaticShortcutInsert(text)) {
         return;
       }
 
@@ -1109,20 +1143,26 @@ function dispatchPageFocus() {
   window.dispatchEvent(new Event('focus'));
 }
 
+function shouldLogTextBridge(reason) {
+  return !String(reason || '').startsWith('shortcut-');
+}
+
 async function requestDirectRemoteText(text, reason) {
+  markProgrammaticShortcutInsert(text);
+
   try {
     const result = await ipcRenderer.invoke('session:insert-text', {
       text,
       reason
     });
 
-    log('info', 'Requested direct remote text insert', {
-      reason,
-      length: text.length,
-      ok: Boolean(result?.ok)
-    });
+    if (!result?.ok) {
+      clearProgrammaticShortcutInsert(text);
+    }
+
     return Boolean(result?.ok);
   } catch (error) {
+    clearProgrammaticShortcutInsert(text);
     log('warn', 'Direct remote text insert threw an error', {
       reason,
       message: error.message
@@ -1174,12 +1214,15 @@ async function bridgeTextToRemote(
 
   clipboard.writeText(text);
   state.lastCommittedText = text;
-  log('info', 'Submitting remote text through clipboard bridge', {
-    reason,
-    length: text.length,
-    pasteActionId,
-    restoreClipboard: shouldRestoreClipboard
-  });
+
+  if (shouldLogTextBridge(reason)) {
+    log('info', 'Submitting remote text through clipboard bridge', {
+      reason,
+      length: text.length,
+      pasteActionId,
+      restoreClipboard: shouldRestoreClipboard
+    });
+  }
 
   dispatchPageFocus();
   await delay(140);
@@ -1190,10 +1233,12 @@ async function bridgeTextToRemote(
     setTimeout(() => {
       try {
         clipboard.writeText(clipboardSnapshot || '');
-        log('info', 'Restored local clipboard after transient bridge send', {
-          reason,
-          restoredLength: (clipboardSnapshot || '').length
-        });
+        if (shouldLogTextBridge(reason)) {
+          log('info', 'Restored local clipboard after transient bridge send', {
+            reason,
+            restoredLength: (clipboardSnapshot || '').length
+          });
+        }
       } catch (error) {
         log('warn', 'Failed to restore local clipboard after transient bridge send', {
           reason,
