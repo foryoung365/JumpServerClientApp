@@ -8,6 +8,12 @@ const DEFAULT_LOCAL_HOTKEYS = {
   toggleFullscreen: 'Ctrl+Alt+Enter'
 };
 
+const SHORTCUT_CJK_CONTEXT_TIMEOUT_MS = 2500;
+const SHORTCUT_ASSIST_DEDUP_MS = 450;
+const SHORTCUT_ASSIST_PENDING_MS = 1200;
+const REMOTE_FOCUS_THROTTLE_MS = 180;
+const REMOTE_FOCUS_LOG_INTERVAL_MS = 5000;
+
 const state = {
   panelOpen: false,
   mode: 'shortcut',
@@ -15,15 +21,26 @@ const state = {
   clipboardReady: true,
   isComposingText: false,
   preferChinesePunctuation: true,
+  autoShortcutPunctuation: true,
   localHotkeys: { ...DEFAULT_LOCAL_HOTKEYS },
   buttonPosition: null,
   lastButtonDrag: false,
   lastCommittedText: '',
+  shortcutContextText: '',
+  shortcutContextUpdatedAt: 0,
+  shortcutImeActive: false,
+  lastShortcutAssistText: '',
+  lastShortcutAssistAt: 0,
+  pendingShortcutAssistText: '',
+  pendingShortcutAssistAt: 0,
+  lastRemoteFocusAt: 0,
+  lastRemoteFocusLogAt: 0,
   lastStatus: '会话窗口已接管快捷键。'
 };
 
 let sessionOverlayInitialized = false;
 let rendererLocalHotkeysInstalled = false;
+let shortcutInputTrackingInstalled = false;
 
 const specialKeyDefinitions = [
   { id: 'escape', label: 'Esc' },
@@ -71,6 +88,26 @@ const punctuationReplacementMap = {
   '>': '》'
 };
 
+const directChinesePunctuationSet = new Set([
+  '\uFF0C',
+  '\u3002',
+  '\u3001',
+  '\uFF1F',
+  '\uFF01',
+  '\uFF1A',
+  '\uFF1B',
+  '\uFF08',
+  '\uFF09',
+  '\u3010',
+  '\u3011',
+  '\u300A',
+  '\u300B',
+  '\u201C',
+  '\u201D',
+  '\u2018',
+  '\u2019'
+]);
+
 function isCjkCharacter(value) {
   return /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/.test(value);
 }
@@ -111,6 +148,150 @@ function normalizeChinesePunctuation(value) {
   }).join('');
 
   return { normalized, converted };
+}
+
+function containsCjkText(value) {
+  return /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/.test(value || '');
+}
+
+function isOverlayTarget(target) {
+  return target instanceof Element && Boolean(target.closest('#jump-wrapper-root'));
+}
+
+function rememberShortcutContext(text, source) {
+  if (!text) {
+    return;
+  }
+
+  const shouldAppend = containsCjkText(text) || /[\u3000-\u303f\uff00-\uffef]/.test(text);
+  state.shortcutContextText = shouldAppend ? `${state.shortcutContextText}${text}`.slice(-16) : text.slice(-16);
+  state.shortcutContextUpdatedAt = Date.now();
+
+  if (shouldAppend) {
+    log('info', 'Updated shortcut input context', {
+      source,
+      text,
+      context: state.shortcutContextText
+    });
+  }
+}
+
+function hasRecentShortcutCjkContext() {
+  if (!state.shortcutContextUpdatedAt) {
+    return false;
+  }
+
+  if (Date.now() - state.shortcutContextUpdatedAt > SHORTCUT_CJK_CONTEXT_TIMEOUT_MS) {
+    return false;
+  }
+
+  return containsCjkText(state.shortcutContextText);
+}
+
+function isDirectChinesePunctuation(value) {
+  return directChinesePunctuationSet.has(value || '');
+}
+
+function normalizeShortcutPunctuationCandidate(text, allowAsciiContext = false) {
+  if (!text || text.length !== 1) {
+    return '';
+  }
+
+  if (isDirectChinesePunctuation(text)) {
+    return text;
+  }
+
+  if (allowAsciiContext && punctuationReplacementMap[text] && hasRecentShortcutCjkContext()) {
+    return punctuationReplacementMap[text];
+  }
+
+  return '';
+}
+
+function isRecentShortcutAssist(text) {
+  return (
+    text &&
+    state.lastShortcutAssistText === text &&
+    Date.now() - state.lastShortcutAssistAt < SHORTCUT_ASSIST_DEDUP_MS
+  );
+}
+
+function isPendingShortcutAssist(text) {
+  return (
+    text &&
+    state.pendingShortcutAssistText === text &&
+    Date.now() - state.pendingShortcutAssistAt < SHORTCUT_ASSIST_PENDING_MS
+  );
+}
+
+function beginShortcutAssist(text) {
+  state.pendingShortcutAssistText = text;
+  state.pendingShortcutAssistAt = Date.now();
+}
+
+function finishShortcutAssist(text, { committed = false } = {}) {
+  if (state.pendingShortcutAssistText === text) {
+    state.pendingShortcutAssistText = '';
+    state.pendingShortcutAssistAt = 0;
+  }
+
+  if (committed) {
+    state.lastShortcutAssistText = text;
+    state.lastShortcutAssistAt = Date.now();
+  }
+}
+
+async function handleShortcutCommittedPunctuation(text, reason, event = null, allowAsciiContext = false) {
+  if (state.mode !== 'shortcut' || !state.autoShortcutPunctuation) {
+    return false;
+  }
+
+  const converted = normalizeShortcutPunctuationCandidate(text, allowAsciiContext);
+
+  if (!converted) {
+    return false;
+  }
+
+  if (isRecentShortcutAssist(converted) || isPendingShortcutAssist(converted)) {
+    return true;
+  }
+
+  if (event?.cancelable) {
+    event.preventDefault();
+  }
+
+  if (typeof event?.stopPropagation === 'function') {
+    event.stopPropagation();
+  }
+
+  log('info', 'Intercepted committed shortcut punctuation for automatic text assist', {
+    reason,
+    text,
+    converted,
+    context: state.shortcutContextText
+  });
+
+  beginShortcutAssist(converted);
+
+  const submission = await bridgeTextToRemote(converted, {
+    reason: `shortcut-${reason}`,
+    preferDirectInsert: true,
+    restoreClipboard: true
+  });
+
+  if (!submission.ok) {
+    finishShortcutAssist(converted, { committed: false });
+    setStatus('自动中文标点辅助失败，可手动切到 Text Mode 输入。', true);
+    return true;
+  }
+
+  finishShortcutAssist(converted, { committed: true });
+  rememberShortcutContext(converted, reason);
+  setStatus(`已自动补发中文标点 ${converted}`);
+  setTimeout(() => {
+    focusRemoteSink();
+  }, 20);
+  return true;
 }
 
 function insertTextAtCursor(element, text) {
@@ -207,6 +388,136 @@ function toShortcutInput(event) {
   };
 }
 
+function installShortcutInputTracking() {
+  if (shortcutInputTrackingInstalled) {
+    return;
+  }
+
+  shortcutInputTrackingInstalled = true;
+
+  document.addEventListener(
+    'compositionstart',
+    (event) => {
+      if (state.mode !== 'shortcut' || isOverlayTarget(event.target)) {
+        return;
+      }
+
+      state.shortcutImeActive = true;
+      log('info', 'Shortcut mode IME composition started');
+    },
+    true
+  );
+
+  document.addEventListener(
+    'compositionend',
+    (event) => {
+      if (state.mode !== 'shortcut' || isOverlayTarget(event.target)) {
+        return;
+      }
+
+      state.shortcutImeActive = false;
+      const text = typeof event.data === 'string' ? event.data : '';
+
+      if (containsCjkText(text)) {
+        rememberShortcutContext(text, 'compositionend');
+      }
+    },
+    true
+  );
+
+  document.addEventListener(
+    'beforeinput',
+    async (event) => {
+      if (state.mode !== 'shortcut' || isOverlayTarget(event.target)) {
+        return;
+      }
+
+      if (!String(event.inputType || '').startsWith('insert')) {
+        return;
+      }
+
+      const text = typeof event.data === 'string' ? event.data : '';
+
+      await handleShortcutCommittedPunctuation(text, 'beforeinput', event, true);
+    },
+    true
+  );
+
+  document.addEventListener(
+    'input',
+    (event) => {
+      if (state.mode !== 'shortcut' || isOverlayTarget(event.target)) {
+        return;
+      }
+
+      const text = typeof event.data === 'string' ? event.data : '';
+
+      if (!text) {
+        return;
+      }
+
+      rememberShortcutContext(text, 'input');
+    },
+    true
+  );
+}
+
+async function tryHandleAutoShortcutPunctuation(event) {
+  if (state.mode !== 'shortcut' || !state.autoShortcutPunctuation) {
+    return false;
+  }
+
+  if (isOverlayTarget(event.target) || event.defaultPrevented || event.repeat) {
+    return false;
+  }
+
+  if (event.ctrlKey || event.altKey || event.metaKey || event.isComposing || state.shortcutImeActive) {
+    return false;
+  }
+
+  const converted = normalizeShortcutPunctuationCandidate(event.key, true);
+
+  if (!converted) {
+    return false;
+  }
+
+  if (isRecentShortcutAssist(converted) || isPendingShortcutAssist(converted)) {
+    event.preventDefault();
+    event.stopPropagation();
+    return true;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  log('info', 'Intercepted shortcut punctuation for automatic text assist', {
+    key: event.key,
+    converted,
+    context: state.shortcutContextText
+  });
+
+  beginShortcutAssist(converted);
+
+  const submission = await bridgeTextToRemote(converted, {
+    reason: 'shortcut-auto-punctuation',
+    preferDirectInsert: true,
+    restoreClipboard: true
+  });
+
+  if (!submission.ok) {
+    setStatus('自动中文标点辅助失败，可手动切到 Text Mode 输入。', true);
+    return true;
+  }
+
+  finishShortcutAssist(converted, { committed: true });
+  rememberShortcutContext(converted, 'auto-punctuation');
+  setStatus(`已自动补发中文标点 ${converted}`);
+  setTimeout(() => {
+    focusRemoteSink();
+  }, 20);
+  return true;
+}
+
 function installRendererLocalHotkeys() {
   if (rendererLocalHotkeysInstalled) {
     return;
@@ -216,7 +527,7 @@ function installRendererLocalHotkeys() {
 
   document.addEventListener(
     'keydown',
-    (event) => {
+    async (event) => {
       const localAction = findLocalAction(toShortcutInput(event), state.localHotkeys);
 
       if (!localAction) {
@@ -266,17 +577,26 @@ function ensureStyleTag() {
       position: absolute;
       top: 18px;
       right: 18px;
-      width: 44px;
-      height: 44px;
+      width: 38px;
+      height: 38px;
+      padding: 0;
       border: none;
-      border-radius: 14px;
+      border-radius: 12px;
       background: linear-gradient(135deg, #f97316, #dc2626);
       color: #f8fafc;
       box-shadow: 0 18px 40px rgba(220, 38, 38, 0.32);
       cursor: pointer;
       pointer-events: auto;
-      font-weight: 700;
-      letter-spacing: 0.04em;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #jump-wrapper-toggle svg {
+      width: 18px;
+      height: 18px;
+      stroke: currentColor;
+      pointer-events: none;
     }
 
     #jump-wrapper-panel {
@@ -494,6 +814,7 @@ function getSessionSummary() {
     `模式: ${state.mode === 'shortcut' ? 'Shortcut Mode' : 'Text Mode'}`,
     `剪贴板同步: ${state.clipboardReady ? '本地可用，远端权限未知' : '本地剪贴板不可用'}`,
     `中文标点优先: ${state.preferChinesePunctuation ? '开启' : '关闭'}`,
+    `Shortcut 自动中文标点: ${state.autoShortcutPunctuation ? '开启' : '关闭'}`,
     `热键: Ctrl+Alt+K 打开面板 / Ctrl+Alt+Space 切换文本模式 / Ctrl+Alt+Enter 切换本地全屏`
   ].join('\n');
 }
@@ -542,7 +863,14 @@ function findRemoteSink() {
   return display;
 }
 
-function focusRemoteSink() {
+function focusRemoteSink({ reason = 'unspecified', force = false } = {}) {
+  const now = Date.now();
+
+  if (!force && now - state.lastRemoteFocusAt < REMOTE_FOCUS_THROTTLE_MS) {
+    return false;
+  }
+
+  state.lastRemoteFocusAt = now;
   const display = getDisplayElement();
   const sink = findRemoteSink();
 
@@ -564,10 +892,21 @@ function focusRemoteSink() {
     display.click();
   }
 
-  log('info', 'Requested remote focus', {
-    hasDisplay: Boolean(display),
-    hasSink: Boolean(sink)
-  });
+  const shouldLog =
+    !display ||
+    !sink ||
+    now - state.lastRemoteFocusLogAt >= REMOTE_FOCUS_LOG_INTERVAL_MS;
+
+  if (shouldLog) {
+    state.lastRemoteFocusLogAt = now;
+    log(display && sink ? 'info' : 'warn', 'Requested remote focus', {
+      reason,
+      hasDisplay: Boolean(display),
+      hasSink: Boolean(sink)
+    });
+  }
+
+  return Boolean(display || sink);
 }
 
 function togglePanel() {
@@ -730,6 +1069,19 @@ function toggleChinesePunctuationPreference() {
   );
 }
 
+function toggleAutoShortcutPunctuation() {
+  state.autoShortcutPunctuation = !state.autoShortcutPunctuation;
+  log('info', 'Toggled shortcut auto punctuation assist', {
+    enabled: state.autoShortcutPunctuation
+  });
+  syncUiState();
+  setStatus(
+    state.autoShortcutPunctuation
+      ? 'Shortcut Mode 自动中文标点辅助已开启。检测到最近中文输入时，会后台自动补发中文标点。'
+      : 'Shortcut Mode 自动中文标点辅助已关闭。中文标点请改用 Text Mode。'
+  );
+}
+
 async function syncClipboardAvailability() {
   try {
     clipboard.readText();
@@ -748,6 +1100,103 @@ function dispatchPageFocus() {
   window.dispatchEvent(new Event('focus'));
 }
 
+async function requestDirectRemoteText(text, reason) {
+  try {
+    const result = await ipcRenderer.invoke('session:insert-text', {
+      text,
+      reason
+    });
+
+    log('info', 'Requested direct remote text insert', {
+      reason,
+      length: text.length,
+      ok: Boolean(result?.ok)
+    });
+    return Boolean(result?.ok);
+  } catch (error) {
+    log('warn', 'Direct remote text insert threw an error', {
+      reason,
+      message: error.message
+    });
+    return false;
+  }
+}
+
+async function bridgeTextToRemote(
+  text,
+  {
+    reason = 'text-bridge',
+    pasteActionId = 'paste-ctrl-v',
+    preferDirectInsert = false,
+    restoreClipboard = false
+  } = {}
+) {
+  if (!text) {
+    return { ok: false, method: 'empty' };
+  }
+
+  if (preferDirectInsert) {
+    const inserted = await requestDirectRemoteText(text, reason);
+
+    if (inserted) {
+      state.lastCommittedText = text;
+      return { ok: true, method: 'insert-text' };
+    }
+  }
+
+  if (!state.clipboardReady) {
+    return { ok: false, method: 'clipboard-unavailable' };
+  }
+
+  let clipboardSnapshot = null;
+  let shouldRestoreClipboard = false;
+
+  if (restoreClipboard) {
+    try {
+      clipboardSnapshot = clipboard.readText();
+      shouldRestoreClipboard = true;
+    } catch (error) {
+      log('warn', 'Failed to snapshot local clipboard before bridge send', {
+        reason,
+        message: error.message
+      });
+    }
+  }
+
+  clipboard.writeText(text);
+  state.lastCommittedText = text;
+  log('info', 'Submitting remote text through clipboard bridge', {
+    reason,
+    length: text.length,
+    pasteActionId,
+    restoreClipboard: shouldRestoreClipboard
+  });
+
+  dispatchPageFocus();
+  await delay(140);
+  focusRemoteSink();
+  ipcRenderer.send('session:request-sequence', { actionId: pasteActionId });
+
+  if (shouldRestoreClipboard) {
+    setTimeout(() => {
+      try {
+        clipboard.writeText(clipboardSnapshot || '');
+        log('info', 'Restored local clipboard after transient bridge send', {
+          reason,
+          restoredLength: (clipboardSnapshot || '').length
+        });
+      } catch (error) {
+        log('warn', 'Failed to restore local clipboard after transient bridge send', {
+          reason,
+          message: error.message
+        });
+      }
+    }, 520);
+  }
+
+  return { ok: true, method: 'clipboard-bridge' };
+}
+
 async function submitComposer({ fallback = false } = {}) {
   const textarea = document.getElementById('jump-wrapper-textarea');
 
@@ -762,18 +1211,11 @@ async function submitComposer({ fallback = false } = {}) {
     return;
   }
 
-  if (!state.clipboardReady) {
-    setStatus('本地剪贴板不可用，当前无法使用文本模式。', true);
-    return;
-  }
-
   const { normalized, converted } = state.preferChinesePunctuation
     ? normalizeChinesePunctuation(rawValue)
     : { normalized: rawValue, converted: 0 };
   const value = normalized;
 
-  clipboard.writeText(value);
-  state.lastCommittedText = value;
   log('info', 'Submitting text mode content', {
     fallback,
     length: value.length,
@@ -786,13 +1228,15 @@ async function submitComposer({ fallback = false } = {}) {
       : `文本已写入本地剪贴板，正在同步远端并发送 Ctrl+V${converted ? `，并已转换 ${converted} 处中文标点` : ''}。`
   );
 
-  dispatchPageFocus();
-  await delay(140);
-  focusRemoteSink();
-
-  ipcRenderer.send('session:request-sequence', {
-    actionId: fallback ? 'paste-shift-insert' : 'paste-ctrl-v'
+  const submission = await bridgeTextToRemote(value, {
+    reason: 'text-mode',
+    pasteActionId: fallback ? 'paste-shift-insert' : 'paste-ctrl-v'
   });
+
+  if (!submission.ok) {
+    setStatus('本地剪贴板不可用，当前无法使用文本模式。', true);
+    return;
+  }
 
   textarea.value = '';
   setMode('shortcut');
@@ -816,8 +1260,18 @@ function syncUiState() {
   const summary = document.getElementById('jump-wrapper-summary');
   const fullscreenButton = document.getElementById('jump-wrapper-fullscreen');
   const punctuationToggle = document.getElementById('jump-wrapper-punctuation-toggle');
+  const autoPunctuationToggle = document.getElementById('jump-wrapper-auto-punctuation-toggle');
 
-  if (!panel || !shortcutChip || !textChip || !composer || !summary || !fullscreenButton || !punctuationToggle) {
+  if (
+    !panel ||
+    !shortcutChip ||
+    !textChip ||
+    !composer ||
+    !summary ||
+    !fullscreenButton ||
+    !punctuationToggle ||
+    !autoPunctuationToggle
+  ) {
     return;
   }
 
@@ -829,6 +1283,8 @@ function syncUiState() {
   fullscreenButton.textContent = state.fullScreen ? '退出本地全屏' : '进入本地全屏';
   punctuationToggle.classList.toggle('is-active', state.preferChinesePunctuation);
   punctuationToggle.textContent = `中文标点优先: ${state.preferChinesePunctuation ? '开' : '关'}`;
+  autoPunctuationToggle.classList.toggle('is-active', state.autoShortcutPunctuation);
+  autoPunctuationToggle.textContent = `Auto CN punct: ${state.autoShortcutPunctuation ? 'ON' : 'OFF'}`;
   applyFloatingLayout();
 }
 
@@ -863,8 +1319,16 @@ function createOverlay() {
   const toggleButton = document.createElement('button');
   toggleButton.id = 'jump-wrapper-toggle';
   toggleButton.type = 'button';
-  toggleButton.textContent = 'JS';
+  toggleButton.innerHTML = `
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="2.5" y="5.5" width="19" height="13" rx="2.5" stroke-width="1.8"></rect>
+      <path d="M6.5 9.5H8.5M10 9.5H12M13.5 9.5H15.5M17 9.5H17.5" stroke-width="1.8" stroke-linecap="round"></path>
+      <path d="M5.5 13H7M8.5 13H10M11.5 13H13M14.5 13H16M17.5 13H18.5" stroke-width="1.8" stroke-linecap="round"></path>
+      <path d="M7.5 16.5H16.5" stroke-width="1.8" stroke-linecap="round"></path>
+    </svg>
+  `;
   toggleButton.title = 'JumpServer Wrapper 面板';
+  toggleButton.setAttribute('aria-label', 'Open JumpServer wrapper panel');
   toggleButton.addEventListener('click', () => {
     togglePanel();
   });
@@ -888,6 +1352,10 @@ function createOverlay() {
           <button id="jump-wrapper-text-chip" type="button" class="jump-wrapper-chip">Text Mode</button>
         </div>
         <p class="jump-wrapper-micro">推荐约定远端 IME 保持英文。中文正文通过本地 IME 在 Text Mode 里完成后短句提交。</p>
+        <div class="jump-wrapper-inline-controls">
+          <button id="jump-wrapper-auto-punctuation-toggle" type="button" class="jump-wrapper-chip">Auto CN punct: ON</button>
+          <span class="jump-wrapper-micro">Shortcut Mode 下检测到最近中文输入时，会后台自动补发中文标点，然后立刻把焦点送回远端。</span>
+        </div>
       </div>
 
       <div id="jump-wrapper-compose" class="jump-wrapper-card jump-wrapper-compose">
@@ -966,6 +1434,7 @@ function createOverlay() {
   const grid = document.getElementById('jump-wrapper-grid');
   const punctuationGrid = document.getElementById('jump-wrapper-punctuation-grid');
   const punctuationToggle = document.getElementById('jump-wrapper-punctuation-toggle');
+  const autoPunctuationToggle = document.getElementById('jump-wrapper-auto-punctuation-toggle');
   const textarea = document.getElementById('jump-wrapper-textarea');
   homeButton.textContent = '快捷键映射';
   homeButton.title = '打开首页配置里的快捷键映射';
@@ -973,6 +1442,7 @@ function createOverlay() {
   shortcutChip.addEventListener('click', () => setMode('shortcut'));
   textChip.addEventListener('click', () => setMode('text'));
   punctuationToggle.addEventListener('click', () => toggleChinesePunctuationPreference());
+  autoPunctuationToggle.addEventListener('click', () => toggleAutoShortcutPunctuation());
   panelDismissButton.addEventListener('click', () => {
     state.panelOpen = false;
     syncUiState();
@@ -1123,6 +1593,7 @@ function initializeSessionOverlay(reason) {
   sessionOverlayInitialized = true;
   log('info', 'Initializing session overlay', { reason, readyState: document.readyState });
   createOverlay();
+  installShortcutInputTracking();
   installRendererLocalHotkeys();
   loadLocalHotkeys();
   syncClipboardAvailability();
@@ -1151,10 +1622,9 @@ window.addEventListener('pagehide', () => {
 });
 
 window.addEventListener('focus', () => {
-  log('info', 'Session window focus event observed in renderer');
   if (state.mode === 'shortcut') {
     setTimeout(() => {
-      focusRemoteSink();
+      focusRemoteSink({ reason: 'renderer-window-focus' });
     }, 80);
   }
 });
@@ -1164,17 +1634,15 @@ ipcRenderer.on('session:local-action', (_event, payload) => {
 });
 
 ipcRenderer.on('session:focus-remote', () => {
-  log('info', 'Received focus-remote command from main process');
-  focusRemoteSink();
+  focusRemoteSink({ reason: 'main-process-focus-remote', force: true });
 });
 
 ipcRenderer.on('session:window-focus', () => {
-  log('info', 'Received window-focus sync from main process');
   dispatchPageFocus();
 
   if (state.mode === 'shortcut') {
     setTimeout(() => {
-      focusRemoteSink();
+      focusRemoteSink({ reason: 'main-process-window-focus' });
     }, 70);
   }
 });

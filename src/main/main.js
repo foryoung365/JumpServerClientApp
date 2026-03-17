@@ -417,7 +417,6 @@ function attachMainWindowHandlers(windowInstance) {
       return;
     }
 
-    windowLogger.info('Main window focused while showing session page');
     sendToSessionRenderer(sessionContext, 'session:window-focus');
   });
 }
@@ -696,7 +695,6 @@ function attachSessionHandlers(windowInstance) {
   });
 
   windowInstance.on('focus', () => {
-    windowLogger.info('Session window focused');
     sendToSessionRenderer(sessionContext, 'session:window-focus');
   });
 
@@ -885,6 +883,41 @@ function registerIpcHandlers() {
       keys: payload.keys
     });
     await replaySequence(sessionContext, payload.actionId, payload.keys);
+  });
+
+  ipcMain.handle('session:insert-text', async (event, payload = {}) => {
+    const sessionContext = getSessionContextByWebContents(event.sender.id);
+    const text = typeof payload.text === 'string' ? payload.text : '';
+
+    if (!sessionContext || !text) {
+      return { ok: false };
+    }
+
+    logger.info('Renderer requested direct text insert', {
+      senderId: event.sender.id,
+      reason: payload.reason,
+      length: text.length,
+      textSample: text.slice(0, 16)
+    });
+
+    try {
+      sendToSessionRenderer(sessionContext, 'session:focus-remote');
+      await delay(30);
+      sessionContext.window.focus();
+      await delay(10);
+      await Promise.resolve(sessionContext.window.webContents.insertText(text));
+      return { ok: true };
+    } catch (error) {
+      logger.warn('Direct text insert failed', {
+        senderId: event.sender.id,
+        reason: payload.reason,
+        message: error.message
+      });
+      return {
+        ok: false,
+        error: error.message
+      };
+    }
   });
 
   ipcMain.on('session:toggle-fullscreen', (event) => {
