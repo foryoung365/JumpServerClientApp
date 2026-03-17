@@ -9,7 +9,7 @@ const DEFAULT_LOCAL_HOTKEYS = {
 };
 
 const SHORTCUT_CJK_CONTEXT_TIMEOUT_MS = 2500;
-const SHORTCUT_ASSIST_DEDUP_MS = 450;
+const SHORTCUT_ASSIST_DEDUP_MS = 40;
 const SHORTCUT_ASSIST_PENDING_MS = 1200;
 const REMOTE_FOCUS_THROTTLE_MS = 180;
 const REMOTE_FOCUS_LOG_INTERVAL_MS = 5000;
@@ -206,6 +206,10 @@ function normalizeShortcutPunctuationCandidate(text, allowAsciiContext = false) 
   }
 
   return '';
+}
+
+function isPotentialShortcutPunctuationText(text) {
+  return Boolean(text) && (isDirectChinesePunctuation(text) || Boolean(punctuationReplacementMap[text]));
 }
 
 function isRecentShortcutAssist(text) {
@@ -427,7 +431,7 @@ function installShortcutInputTracking() {
 
   document.addEventListener(
     'beforeinput',
-    async (event) => {
+    (event) => {
       if (state.mode !== 'shortcut' || isOverlayTarget(event.target)) {
         return;
       }
@@ -438,7 +442,11 @@ function installShortcutInputTracking() {
 
       const text = typeof event.data === 'string' ? event.data : '';
 
-      await handleShortcutCommittedPunctuation(text, 'beforeinput', event, true);
+      if (!isPotentialShortcutPunctuationText(text)) {
+        return;
+      }
+
+      void handleShortcutCommittedPunctuation(text, 'beforeinput', event, true);
     },
     true
   );
@@ -921,9 +929,10 @@ function ensureFloatingButtonPosition(button) {
   }
 
   const buttonWidth = button.offsetWidth || 44;
+  const buttonHeight = button.offsetHeight || 44;
   state.buttonPosition = {
-    left: window.innerWidth - buttonWidth - 18,
-    top: 18
+    left: 18,
+    top: Math.max(18, window.innerHeight - buttonHeight - 18)
   };
 }
 
