@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>JumpServer Wrapper</title>
+    <link rel="stylesheet" href="./home.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div class="eyebrow">JumpServer Community Windows Web Wrapper</div>
+        <h1>把社区版 Lion 会话装进桌面壳里，用 Electron 先解决最痛的两个问题。</h1>
+        <p class="hero-copy">
+          这版 MVP 不改 JumpServer 服务端，保留原登录与资产访问流程，重点接管
+          VS Code 高频快捷键，并提供“本机 IME 短句提交”的文本模式。
+        </p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>连接配置</h2>
+            <p>填写 JumpServer 地址后，主窗口会直接承载原站点；命中 Lion 会话链接时自动分流到专用 Session 窗口。</p>
+          </div>
+          <div class="header-actions">
+            <button id="open-logs" class="ghost">打开日志</button>
+            <button id="close-window" class="ghost">关闭窗口</button>
+            <button id="quit-app" class="secondary">退出程序</button>
+          </div>
+        </div>
+
+        <form id="config-form" class="form">
+          <label class="field">
+            <span>JumpServer 地址</span>
+            <input
+              id="server-url"
+              type="text"
+              placeholder="例如 https://jumpserver.example.com"
+              autocomplete="off"
+            />
+          </label>
+
+          <label class="toggle-field">
+            <input id="logging-enabled" type="checkbox" />
+            <span>
+              <strong>诊断日志</strong>
+              <em>默认开启。关闭后将停止写入 `exe` 同级 `logs/` 目录，适合后期正式使用时降噪。</em>
+            </span>
+          </label>
+
+          <section class="mapping-editor">
+            <div class="mapping-editor-header">
+              <div>
+                <strong>自定义远端快捷键映射</strong>
+                <p>把安全的本地触发键映射成远端组合键，适合 `Win+X`、`Win+R`、`Ctrl+Alt+Delete` 这类不适合物理直通的动作。</p>
+              </div>
+              <button type="button" id="add-shortcut-mapping" class="ghost">新增映射</button>
+            </div>
+            <div id="shortcut-mappings" class="mapping-list"></div>
+            <p class="mapping-note">格式示例: 本地触发键填 `Ctrl+Alt+X`，远端组合键填 `Win+X`。当前只支持“一个主键 + 若干修饰键”的映射。</p>
+          </section>
+
+          <div class="action-row">
+            <button type="submit" class="primary">保存并打开</button>
+            <button type="button" id="open-saved" class="secondary">打开已保存地址</button>
+            <button type="button" id="reset-server" class="ghost">清空配置</button>
+          </div>
+        </form>
+
+        <div id="feedback" class="feedback" aria-live="polite"></div>
+      </section>
+
+      <section class="grid">
+        <article class="card">
+          <h3>窗口分流</h3>
+          <p>识别 `/connect/`、`/monitor/`、`/share/:id/` 这类 Lion 会话路径，新开无地址栏 Session 窗口。</p>
+        </article>
+        <article class="card">
+          <h3>快捷键接管</h3>
+          <p>会话窗口拦截 `Ctrl+P`、`Ctrl+Shift+P`、`Ctrl+F`、`Ctrl+H`、`Ctrl+S`、`Ctrl+Tab`、`Alt+Left/Right`、`F11`。</p>
+        </article>
+        <article class="card">
+          <h3>双模输入</h3>
+          <p>默认 Shortcut Mode 走远端按键；Text Mode 用本地 IME 完成中文，再通过“剪贴板 + 远端粘贴”提交。</p>
+        </article>
+      </section>
+
+      <section class="panel compact">
+        <h2>默认本地热键</h2>
+        <div class="hotkey-list">
+          <span><strong>Ctrl+Alt+K</strong> 打开 Session 面板</span>
+          <span><strong>Ctrl+Alt+Space</strong> 切换 Text Mode</span>
+          <span><strong>Ctrl+Alt+Enter</strong> 切换本地全屏</span>
+        </div>
+        <pre id="summary" class="summary"></pre>
+      </section>
+    </main>
+
+    <script src="./home.js"></script>
+  </body>
+</html>

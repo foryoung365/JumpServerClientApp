@@ -1,0 +1,5 @@
+[2026-03-16T08:57:20.731Z] [INFO] [main] Application starting {"packaged":false,"execPath":"I:\\jumpserver-client\\node_modules\\electron\\dist\\electron.exe","logDir":"I:\\jumpserver-client\\logs","loggingEnabled":true}
+[2026-03-16T08:57:20.788Z] [INFO] [main-window:1] Navigation started {"url":"file:///I:/jumpserver-client/src/renderer/home.html","isInPlace":false,"isMainFrame":true}
+[2026-03-16T08:57:20.829Z] [INFO] [main-window:1] Navigation completed {"url":"file:///I:/jumpserver-client/src/renderer/home.html"}
+[2026-03-16T08:57:21.003Z] [INFO] [main] Main window loaded {"url":"file:///I:/jumpserver-client/src/renderer/home.html"}
+[2026-03-16T08:57:21.004Z] [INFO] [home:1] Home config loaded {"serverUrl":"","loggingEnabled":true}

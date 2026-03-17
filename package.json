@@ -1,0 +1,43 @@
+{
+  "name": "jumpserver-windows-web-wrapper",
+  "productName": "JumpServer Windows Web Wrapper",
+  "version": "0.1.0",
+  "description": "Electron MVP wrapper for JumpServer community Windows web sessions.",
+  "main": "src/main/main.js",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "check": "node --check src/main/main.js && node --check src/main/config-store.js && node --check src/main/logger.js && node --check src/main/url-rules.js && node --check src/main/session-shortcuts.js && node --check src/preload/home-preload.js && node --check src/preload/session-preload.js && node --check src/renderer/home.js",
+    "start": "electron .",
+    "dev": "electron .",
+    "dist": "electron-builder --win portable dir --x64"
+  },
+  "devDependencies": {
+    "electron": "^38.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.jumpserver.wrapper.mvp",
+    "productName": "JumpServer Windows Web Wrapper",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "package.json",
+      "src/**/*",
+      "!dist{,/**/*}",
+      "!logs{,/**/*}"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        "portable",
+        "dir"
+      ],
+      "artifactName": "JumpServer-Windows-Web-Wrapper-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "JumpServer-Windows-Web-Wrapper-Portable-${version}.${ext}"
+    }
+  }
+}
