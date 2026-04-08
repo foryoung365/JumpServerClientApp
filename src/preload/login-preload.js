@@ -1,6 +1,10 @@
 const { ipcRenderer } = require('electron');
 
-const { chooseLoginFieldPair, shouldPromptToSaveCredentials } = require('./login-form-helpers');
+const {
+  chooseLoginFieldPair,
+  isSessionSurface,
+  shouldPromptToSaveCredentials
+} = require('./login-form-helpers');
 
 const LOGIN_PROMPT_ID = 'jump-wrapper-login-save-prompt';
 const LOGIN_PROMPT_STYLE_ID = 'jump-wrapper-login-save-style';
@@ -26,17 +30,11 @@ function log(level, message, meta = {}) {
   });
 }
 
-function isSessionLikeUrl(rawUrl) {
-  try {
-    const parsed = new URL(rawUrl);
-    return (
-      /(?:^|\/)(?:lion\/)?connect\/?$/i.test(parsed.pathname) ||
-      /(?:^|\/)(?:lion\/)?monitor\/?$/i.test(parsed.pathname) ||
-      /(?:^|\/)(?:lion\/)?share\/[^/]+\/?$/i.test(parsed.pathname)
-    );
-  } catch (_error) {
-    return false;
-  }
+function isCurrentSessionSurface() {
+  return isSessionSurface({
+    url: window.location.href,
+    hasDisplayElement: Boolean(document.getElementById('display'))
+  });
 }
 
 function isVisibleElement(element) {
@@ -389,7 +387,7 @@ function bindFormSubmit(candidate) {
 }
 
 async function syncLoginSurface(reason) {
-  if (isSessionLikeUrl(window.location.href)) {
+  if (isCurrentSessionSurface()) {
     dismissPrompt();
     return;
   }
@@ -427,13 +425,17 @@ function patchHistoryMethod(methodName) {
 }
 
 function install() {
-  if (window.location.protocol === 'file:' || !process.isMainFrame) {
+  if (window.location.protocol === 'file:' || !process.isMainFrame || isCurrentSessionSurface()) {
     return;
   }
 
   document.addEventListener(
     'submit',
     () => {
+      if (isCurrentSessionSurface()) {
+        return;
+      }
+
       captureAttempt(getLoginFieldCandidate(), 'document-submit');
     },
     true
@@ -442,6 +444,10 @@ function install() {
   document.addEventListener(
     'keydown',
     (event) => {
+      if (isCurrentSessionSurface()) {
+        return;
+      }
+
       if (event.key !== 'Enter') {
         return;
       }

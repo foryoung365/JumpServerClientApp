@@ -1,4 +1,5 @@
 const { ipcRenderer } = require('electron');
+const { isSessionSurface } = require('./login-form-helpers');
 const preloadScope = process.isMainFrame ? 'home-main' : 'home-subframe';
 
 function isLocalWrapperPage() {
@@ -154,7 +155,13 @@ if (isLocalWrapperPage()) {
     isMainFrame: process.isMainFrame,
     readyState: document.readyState
   });
-  if (process.isMainFrame) {
+  if (
+    process.isMainFrame &&
+    !isSessionSurface({
+      url: window.location.href,
+      hasDisplayElement: isSessionLikeDom()
+    })
+  ) {
     require('./login-preload');
   }
   installSessionDetector();

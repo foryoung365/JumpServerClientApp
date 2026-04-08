@@ -70,6 +70,24 @@ function chooseLoginFieldPair(fieldDescriptors) {
   };
 }
 
+function isSessionSurface({ url, hasDisplayElement }) {
+  if (hasDisplayElement) {
+    return true;
+  }
+
+  try {
+    const parsed = new URL(url);
+
+    return (
+      /(?:^|\/)(?:lion\/)?connect\/?$/i.test(parsed.pathname) ||
+      /(?:^|\/)(?:lion\/)?monitor\/?$/i.test(parsed.pathname) ||
+      /(?:^|\/)(?:lion\/)?share\/[^/]+\/?$/i.test(parsed.pathname)
+    );
+  } catch (_error) {
+    return false;
+  }
+}
+
 function shouldPromptToSaveCredentials({ initialUrl, currentUrl, hasVisiblePasswordField }) {
   if (hasVisiblePasswordField) {
     return false;
@@ -91,5 +109,6 @@ function shouldPromptToSaveCredentials({ initialUrl, currentUrl, hasVisiblePassw
 
 module.exports = {
   chooseLoginFieldPair,
+  isSessionSurface,
   shouldPromptToSaveCredentials
 };

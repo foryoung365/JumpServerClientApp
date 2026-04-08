@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 
 const {
   chooseLoginFieldPair,
+  isSessionSurface,
   shouldPromptToSaveCredentials
 } = require('../src/preload/login-form-helpers');
 
@@ -81,6 +82,36 @@ test('shouldPromptToSaveCredentials returns false while still on the login page'
       initialUrl: 'https://jumpserver.example.com/core/auth/login/',
       currentUrl: 'https://jumpserver.example.com/core/auth/login/?next=%2F',
       hasVisiblePasswordField: true
+    }),
+    false
+  );
+});
+
+test('isSessionSurface returns true for a session-like url', () => {
+  assert.equal(
+    isSessionSurface({
+      url: 'https://jumpserver.example.com/lion/connect/',
+      hasDisplayElement: false
+    }),
+    true
+  );
+});
+
+test('isSessionSurface returns true when display dom already exists', () => {
+  assert.equal(
+    isSessionSurface({
+      url: 'https://jumpserver.example.com/assets/1/',
+      hasDisplayElement: true
+    }),
+    true
+  );
+});
+
+test('isSessionSurface returns false for a normal login page', () => {
+  assert.equal(
+    isSessionSurface({
+      url: 'https://jumpserver.example.com/core/auth/login/',
+      hasDisplayElement: false
     }),
     false
   );
