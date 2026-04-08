@@ -1,8 +1,9 @@
 const path = require('node:path');
 
-const { app, BrowserWindow, Menu, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, safeStorage, shell } = require('electron');
 
 const { ConfigStore } = require('./config-store');
+const { CredentialStore } = require('./credential-store');
 const { createLogger } = require('./logger');
 const { isJumpServerCandidate, isSessionUrl, parseUrl } = require('./url-rules');
 const {
@@ -13,6 +14,7 @@ const {
 } = require('./session-shortcuts');
 
 let configStore;
+let credentialStore;
 let logger;
 let mainWindow;
 let mainWindowSessionContext = null;
@@ -55,6 +57,10 @@ function getAssetPath(...segments) {
 
 function getConfig() {
   return configStore.get();
+}
+
+function getServerUrlCandidate(rawValue) {
+  return typeof rawValue === 'string' && rawValue.trim() ? rawValue.trim() : getConfig().serverUrl;
 }
 
 function isLoggingEnabled() {
@@ -810,6 +816,40 @@ function registerIpcHandlers() {
     return { ok: true };
   });
 
+  ipcMain.handle('credentials:get-status', async (_event, payload = {}) => {
+    return credentialStore.getStatus(getServerUrlCandidate(payload.serverUrl));
+  });
+
+  ipcMain.handle('credentials:get-login', async (_event, payload = {}) => {
+    return credentialStore.getLogin(getServerUrlCandidate(payload.serverUrl));
+  });
+
+  ipcMain.handle('credentials:save-login', async (_event, payload = {}) => {
+    const serverUrl = getServerUrlCandidate(payload.serverUrl);
+    const saved = credentialStore.saveLogin(serverUrl, {
+      username: payload.username,
+      password: payload.password
+    });
+
+    logger.info('Saved JumpServer login credential', {
+      serverUrl: saved.serverOrigin,
+      username: String(payload.username || '')
+    });
+
+    return saved;
+  });
+
+  ipcMain.handle('credentials:clear-login', async (_event, payload = {}) => {
+    const serverUrl = getServerUrlCandidate(payload.serverUrl);
+    const cleared = credentialStore.clearLogin(serverUrl);
+
+    logger.info('Cleared JumpServer login credential', {
+      serverUrl: cleared.serverOrigin
+    });
+
+    return cleared;
+  });
+
   ipcMain.handle('window:close', async (event) => {
     const windowInstance = BrowserWindow.fromWebContents(event.sender);
     const sessionContext = getSessionContextByWebContents(event.sender.id);
@@ -969,6 +1009,7 @@ app.whenReady().then(() => {
   }
 
   configStore = new ConfigStore(app);
+  credentialStore = new CredentialStore(app, { safeStorage });
   logger = createLogger(app, { getEnabled: isLoggingEnabled });
   logger.ensureLogDir();
   logger.info('Application starting', {

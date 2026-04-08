@@ -1,5 +1,11 @@
 const { clipboard, ipcRenderer } = require('electron');
 const { buildLocalActions, findLocalAction } = require('../main/session-shortcuts');
+const {
+  CHINESE_PUNCTUATION_BUTTONS: SHARED_CHINESE_PUNCTUATION_BUTTONS,
+  DIRECT_CHINESE_PUNCTUATION,
+  normalizeChinesePunctuation: normalizeSharedChinesePunctuation,
+  normalizeShortcutPunctuationCandidate: normalizeSharedShortcutPunctuationCandidate
+} = require('../shared/chinese-punctuation');
 const sessionScope = process.isMainFrame ? 'session-main' : 'session-subframe';
 
 const DEFAULT_LOCAL_HOTKEYS = {
@@ -55,6 +61,25 @@ const specialKeyDefinitions = [
   { id: 'win-e', label: 'Win+E' },
   { id: 'paste-shift-insert', label: 'Shift+Insert' }
 ];
+
+const shortcutPunctuationInputs = new Set([
+  ',',
+  '.',
+  '?',
+  '!',
+  ':',
+  ';',
+  '(',
+  ')',
+  '[',
+  ']',
+  '<',
+  '>',
+  '"',
+  "'",
+  '...',
+  '--'
+]);
 
 const chinesePunctuationButtons = [
   '，',
@@ -182,27 +207,25 @@ function hasRecentShortcutCjkContext() {
 }
 
 function isDirectChinesePunctuation(value) {
-  return directChinesePunctuationSet.has(value || '');
+  return DIRECT_CHINESE_PUNCTUATION.has(value || '') || directChinesePunctuationSet.has(value || '');
 }
 
-function normalizeShortcutPunctuationCandidate(text, allowAsciiContext = false) {
-  if (!text || text.length !== 1) {
+function getShortcutNormalizationContext(allowAsciiContext) {
+  if (!allowAsciiContext || !hasRecentShortcutCjkContext()) {
     return '';
   }
 
-  if (isDirectChinesePunctuation(text)) {
-    return text;
-  }
+  return state.shortcutContextText;
+}
 
-  if (allowAsciiContext && punctuationReplacementMap[text] && hasRecentShortcutCjkContext()) {
-    return punctuationReplacementMap[text];
-  }
-
-  return '';
+function normalizeShortcutPunctuationCandidate(text, allowAsciiContext = false) {
+  return normalizeSharedShortcutPunctuationCandidate(text, {
+    recentText: getShortcutNormalizationContext(allowAsciiContext)
+  });
 }
 
 function isPotentialShortcutPunctuationText(text) {
-  return Boolean(text) && (isDirectChinesePunctuation(text) || Boolean(punctuationReplacementMap[text]));
+  return Boolean(text) && (isDirectChinesePunctuation(text) || shortcutPunctuationInputs.has(text));
 }
 
 function isRecentShortcutAssist(text) {
@@ -342,7 +365,7 @@ function normalizeTextareaPunctuation(textarea) {
 
   const selectionStart = textarea.selectionStart ?? textarea.value.length;
   const selectionEnd = textarea.selectionEnd ?? selectionStart;
-  const { normalized } = normalizeChinesePunctuation(textarea.value);
+  const { normalized } = normalizeSharedChinesePunctuation(textarea.value);
 
   if (normalized === textarea.value) {
     return;
@@ -570,6 +593,10 @@ function installRendererLocalHotkeys() {
   document.addEventListener(
     'keydown',
     async (event) => {
+      if (await tryHandleAutoShortcutPunctuation(event)) {
+        return;
+      }
+
       const localAction = findLocalAction(toShortcutInput(event), state.localHotkeys);
 
       if (!localAction) {
@@ -1120,8 +1147,8 @@ function toggleAutoShortcutPunctuation() {
   syncUiState();
   setStatus(
     state.autoShortcutPunctuation
-      ? 'Shortcut Mode 自动中文标点辅助已开启。检测到最近中文输入时，会后台自动补发中文标点。'
-      : 'Shortcut Mode 自动中文标点辅助已关闭。中文标点请改用 Text Mode。'
+      ? 'Shortcut Mode 常用中文符号辅助已开启。检测到最近中文输入时，会自动补发标点、引号、省略号与破折号。'
+      : 'Shortcut Mode 常用中文符号辅助已关闭。中文符号请改用 Text Mode。'
   );
 }
 
@@ -1266,7 +1293,7 @@ async function submitComposer({ fallback = false } = {}) {
   }
 
   const { normalized, converted } = state.preferChinesePunctuation
-    ? normalizeChinesePunctuation(rawValue)
+    ? normalizeSharedChinesePunctuation(rawValue)
     : { normalized: rawValue, converted: 0 };
   const value = normalized;
 
@@ -1338,7 +1365,7 @@ function syncUiState() {
   punctuationToggle.classList.toggle('is-active', state.preferChinesePunctuation);
   punctuationToggle.textContent = `中文标点优先: ${state.preferChinesePunctuation ? '开' : '关'}`;
   autoPunctuationToggle.classList.toggle('is-active', state.autoShortcutPunctuation);
-  autoPunctuationToggle.textContent = `Auto CN punct: ${state.autoShortcutPunctuation ? 'ON' : 'OFF'}`;
+  autoPunctuationToggle.textContent = `快捷中文符号: ${state.autoShortcutPunctuation ? '开' : '关'}`;
   applyFloatingLayout();
 }
 
@@ -1407,8 +1434,8 @@ function createOverlay() {
         </div>
         <p class="jump-wrapper-micro">推荐约定远端 IME 保持英文。中文正文通过本地 IME 在 Text Mode 里完成后短句提交。</p>
         <div class="jump-wrapper-inline-controls">
-          <button id="jump-wrapper-auto-punctuation-toggle" type="button" class="jump-wrapper-chip">Auto CN punct: ON</button>
-          <span class="jump-wrapper-micro">Shortcut Mode 下检测到最近中文输入时，会后台自动补发中文标点，然后立刻把焦点送回远端。</span>
+          <button id="jump-wrapper-auto-punctuation-toggle" type="button" class="jump-wrapper-chip">快捷中文符号: 开</button>
+          <span class="jump-wrapper-micro">Shortcut Mode 下检测到最近中文输入时，会自动补发中文标点、单双引号，以及常用的省略号和破折号。</span>
         </div>
       </div>
 
@@ -1416,7 +1443,7 @@ function createOverlay() {
         <label class="jump-wrapper-label" for="jump-wrapper-textarea">本地中文输入区</label>
         <div class="jump-wrapper-inline-controls">
           <button id="jump-wrapper-punctuation-toggle" type="button" class="jump-wrapper-chip">中文标点优先: 开</button>
-          <span class="jump-wrapper-micro">输入完成后会自动把 , . ? ! : ; () [] &lt;&gt; 这些常见半角标点校正为中文标点；提交时也会再补一次。</span>
+          <span class="jump-wrapper-micro">输入完成后会自动把 , . ? ! : ; () [] &lt;&gt; 以及引号、省略号、破折号校正为常用中文符号；提交时也会再补一次。</span>
         </div>
         <textarea id="jump-wrapper-textarea" class="jump-wrapper-textarea" placeholder="在这里用本机输入法完成中文，再用 Ctrl+Enter 提交到远端。"></textarea>
         <div id="jump-wrapper-punctuation-grid" class="jump-wrapper-helper-grid"></div>
@@ -1567,7 +1594,7 @@ function createOverlay() {
     grid.appendChild(button);
   }
 
-  for (const punctuation of chinesePunctuationButtons) {
+  for (const punctuation of SHARED_CHINESE_PUNCTUATION_BUTTONS) {
     const button = createButton(punctuation, 'jump-wrapper-secondary');
     button.addEventListener('click', () => {
       insertTextAtCursor(textarea, punctuation);

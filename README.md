@@ -151,7 +151,7 @@ npm run dist
 
 打包输出 / Build outputs:
 
-- `dist/JumpServer-Windows-Web-Wrapper-Portable-0.1.0.exe`
+- `dist/JumpServer-Windows-Web-Wrapper-Portable-0.1.1.exe`
 - `dist/win-unpacked/JumpServer Windows Web Wrapper.exe`
 
 ## 项目结构 / Project Structure

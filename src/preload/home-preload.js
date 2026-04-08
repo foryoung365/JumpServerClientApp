@@ -140,6 +140,12 @@ if (isLocalWrapperPage()) {
     openLogs() {
       return ipcRenderer.invoke('shell:open-logs');
     },
+    getCredentialStatus(serverUrl) {
+      return ipcRenderer.invoke('credentials:get-status', { serverUrl });
+    },
+    clearSavedLogin(serverUrl) {
+      return ipcRenderer.invoke('credentials:clear-login', { serverUrl });
+    },
     log
   };
 } else {
@@ -148,5 +154,8 @@ if (isLocalWrapperPage()) {
     isMainFrame: process.isMainFrame,
     readyState: document.readyState
   });
+  if (process.isMainFrame) {
+    require('./login-preload');
+  }
   installSessionDetector();
 }

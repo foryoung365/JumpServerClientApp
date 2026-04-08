@@ -10,6 +10,16 @@ const closeWindowButton = document.getElementById('close-window');
 const quitAppButton = document.getElementById('quit-app');
 const shortcutMappingsContainer = document.getElementById('shortcut-mappings');
 const addShortcutMappingButton = document.getElementById('add-shortcut-mapping');
+const credentialStatusText = document.getElementById('credential-status-text');
+const credentialStatusHint = document.getElementById('credential-status-hint');
+const clearSavedLoginButton = document.getElementById('clear-saved-login');
+
+let currentConfig = null;
+let currentCredentialStatus = {
+  canPersist: false,
+  hasSavedCredentials: false,
+  serverOrigin: ''
+};
 
 function setFeedback(message, isError = false) {
   feedback.textContent = message || '';
@@ -63,7 +73,7 @@ function renderShortcutMappingEmptyState() {
 
   const empty = document.createElement('div');
   empty.className = 'mapping-empty';
-  empty.textContent = '当前还没有自定义映射。你可以新增一条，例如 Ctrl+Alt+X -> Win+X。';
+  empty.textContent = '当前尚无自定义映射。可新增一条，例如 Ctrl+Alt+X -> Win+X。';
   shortcutMappingsContainer.appendChild(empty);
 }
 
@@ -87,21 +97,65 @@ function collectShortcutMappings() {
   }));
 }
 
-function renderSummary(config) {
+function renderCredentialStatus(status, serverUrl) {
+  currentCredentialStatus = status || {
+    canPersist: false,
+    hasSavedCredentials: false,
+    serverOrigin: ''
+  };
+
+  const hasServer = Boolean(String(serverUrl || '').trim());
+
+  if (!hasServer) {
+    credentialStatusText.textContent = '尚未配置 JumpServer 地址，暂无法判断登录凭据状态。';
+    credentialStatusHint.textContent = '保存地址后，此处会显示该 JumpServer 登录页是否已有可自动回填的账号密码。';
+    clearSavedLoginButton.disabled = true;
+    return;
+  }
+
+  if (!currentCredentialStatus.canPersist) {
+    credentialStatusText.textContent = '当前系统环境不可用安全加密保存，登录凭据功能将保持关闭。';
+    credentialStatusHint.textContent = '此状态下不会以明文方式落盘保存账号密码。';
+    clearSavedLoginButton.disabled = true;
+    return;
+  }
+
+  if (currentCredentialStatus.hasSavedCredentials) {
+    credentialStatusText.textContent = `当前地址已保存登录：${currentCredentialStatus.serverOrigin}`;
+    credentialStatusHint.textContent = '打开该 JumpServer 登录页时，会尝试自动回填最近一次确认保存的账号密码。';
+    clearSavedLoginButton.disabled = false;
+    return;
+  }
+
+  credentialStatusText.textContent = `当前地址尚未保存登录：${currentCredentialStatus.serverOrigin}`;
+  credentialStatusHint.textContent = '首次登录成功后，应用会询问是否保存当前账号密码。';
+  clearSavedLoginButton.disabled = true;
+}
+
+function renderSummary(config, credentialStatus) {
   const enabledMappings = (config.shortcutMappings || []).filter((mapping) => mapping.enabled !== false);
   const mappingLines =
     enabledMappings.length > 0
       ? enabledMappings
           .slice(0, 8)
           .map((mapping) => `  - ${mapping.name}: ${mapping.trigger} -> ${mapping.remoteSequence}`)
-      : ['  - (无)'];
+      : ['  - （无）'];
+
+  const credentialLine = !config.serverUrl
+    ? '未配置地址'
+    : !credentialStatus.canPersist
+      ? '当前系统不支持安全保存'
+      : credentialStatus.hasSavedCredentials
+        ? `已保存（${credentialStatus.serverOrigin}）`
+        : '未保存';
 
   summary.textContent = [
-    `已保存地址: ${config.serverUrl || '(未配置)'}`,
-    `日志开关: ${config.diagnostics.loggingEnabled ? '开启' : '关闭'}`,
+    `已保存地址: ${config.serverUrl || '（未配置）'}`,
+    `诊断日志: ${config.diagnostics.loggingEnabled ? '开启' : '关闭'}`,
+    `登录凭据: ${credentialLine}`,
     `日志目录: ${config.logDir}`,
     `日志路径: ${config.logPath}`,
-    `本地热键:`,
+    '本地热键:',
     `  - ${config.localHotkeys.togglePanel}: 打开 Session 面板`,
     `  - ${config.localHotkeys.toggleTextMode}: 切换 Text Mode`,
     `  - ${config.localHotkeys.toggleFullscreen}: 切换本地全屏`,
@@ -109,23 +163,54 @@ function renderSummary(config) {
     `自定义映射: ${enabledMappings.length} 条`,
     ...mappingLines,
     '',
-    'Session 窗口能力:',
-    '  - 拦截并重放高频快捷键到 Lion 远端',
-    '  - 提供特殊按键面板',
-    '  - Text Mode 通过本地 IME 组合短句后提交'
+    '会话增强:',
+    '  - 接管常用远端快捷键',
+    '  - 提供特殊按键面板与中文标点辅助',
+    '  - 支持 JumpServer 登录页账号密码保存与自动回填'
   ].join('\n');
 }
 
+async function refreshCredentialStatus(serverUrl = serverInput.value) {
+  const trimmedServerUrl = String(serverUrl || '').trim();
+
+  if (!trimmedServerUrl) {
+    renderCredentialStatus(
+      {
+        canPersist: false,
+        hasSavedCredentials: false,
+        serverOrigin: ''
+      },
+      ''
+    );
+
+    if (currentConfig) {
+      renderSummary(currentConfig, currentCredentialStatus);
+    }
+
+    return currentCredentialStatus;
+  }
+
+  const status = await window.jumpWrapperHome.getCredentialStatus(trimmedServerUrl);
+  renderCredentialStatus(status, trimmedServerUrl);
+
+  if (currentConfig) {
+    renderSummary(currentConfig, status);
+  }
+
+  return status;
+}
+
 async function loadConfig() {
-  const config = await window.jumpWrapperHome.getConfig();
-  serverInput.value = config.serverUrl || '';
-  loggingEnabledInput.checked = config.diagnostics.loggingEnabled;
-  renderShortcutMappings(config.shortcutMappings || []);
-  renderSummary(config);
+  currentConfig = await window.jumpWrapperHome.getConfig();
+  serverInput.value = currentConfig.serverUrl || '';
+  loggingEnabledInput.checked = currentConfig.diagnostics.loggingEnabled;
+  renderShortcutMappings(currentConfig.shortcutMappings || []);
+  await refreshCredentialStatus(currentConfig.serverUrl || '');
+  renderSummary(currentConfig, currentCredentialStatus);
   window.jumpWrapperHome.log('info', 'Home config loaded', {
-    serverUrl: config.serverUrl,
-    loggingEnabled: config.diagnostics.loggingEnabled,
-    shortcutMappingCount: config.shortcutMappings?.length || 0
+    serverUrl: currentConfig.serverUrl,
+    loggingEnabled: currentConfig.diagnostics.loggingEnabled,
+    shortcutMappingCount: currentConfig.shortcutMappings?.length || 0
   });
 }
 
@@ -133,18 +218,19 @@ form.addEventListener('submit', async (event) => {
   event.preventDefault();
 
   try {
-    setFeedback('正在保存配置并启动 JumpServer 主窗口…');
-    const config = await window.jumpWrapperHome.saveConfig({
+    setFeedback('正在保存配置并启动 JumpServer 主窗口……');
+    currentConfig = await window.jumpWrapperHome.saveConfig({
       serverUrl: serverInput.value,
       diagnostics: {
         loggingEnabled: loggingEnabledInput.checked
       },
       shortcutMappings: collectShortcutMappings()
     });
-    renderShortcutMappings(config.shortcutMappings || []);
-    renderSummary(config);
+    renderShortcutMappings(currentConfig.shortcutMappings || []);
+    await refreshCredentialStatus(currentConfig.serverUrl || '');
+    renderSummary(currentConfig, currentCredentialStatus);
     await window.jumpWrapperHome.launchServer();
-    setFeedback('已保存，主窗口正在打开 JumpServer。');
+    setFeedback('配置已保存，主窗口正在打开 JumpServer。');
   } catch (error) {
     setFeedback(error.message || '保存失败。', true);
   }
@@ -162,22 +248,51 @@ openSavedButton.addEventListener('click', async () => {
 
 resetButton.addEventListener('click', async () => {
   try {
-    const config = await window.jumpWrapperHome.resetServer();
+    currentConfig = await window.jumpWrapperHome.resetServer();
     serverInput.value = '';
-    loggingEnabledInput.checked = config.diagnostics.loggingEnabled;
-    renderShortcutMappings(config.shortcutMappings || []);
-    renderSummary(config);
-    setFeedback('已清空已保存地址。');
+    loggingEnabledInput.checked = currentConfig.diagnostics.loggingEnabled;
+    renderShortcutMappings(currentConfig.shortcutMappings || []);
+    await refreshCredentialStatus('');
+    renderSummary(currentConfig, currentCredentialStatus);
+    setFeedback('已清空保存地址。');
   } catch (error) {
     setFeedback(error.message || '清空失败。', true);
   }
+});
+
+clearSavedLoginButton.addEventListener('click', async () => {
+  try {
+    const trimmedServerUrl = String(serverInput.value || '').trim();
+
+    if (!trimmedServerUrl) {
+      setFeedback('请先填写或保存 JumpServer 地址。', true);
+      return;
+    }
+
+    const status = await window.jumpWrapperHome.clearSavedLogin(trimmedServerUrl);
+    renderCredentialStatus(status, trimmedServerUrl);
+
+    if (currentConfig) {
+      renderSummary(currentConfig, status);
+    }
+
+    setFeedback('已清除当前地址对应的已保存登录。');
+  } catch (error) {
+    setFeedback(error.message || '清除已保存登录失败。', true);
+  }
+});
+
+serverInput.addEventListener('change', () => {
+  void refreshCredentialStatus(serverInput.value).catch((error) => {
+    setFeedback(error.message || '读取登录凭据状态失败。', true);
+  });
 });
 
 openLogsButton.addEventListener('click', async () => {
   try {
     window.jumpWrapperHome.log('info', 'Opening log directory');
     await window.jumpWrapperHome.openLogs();
-    setFeedback('已打开日志文件。');
+    setFeedback('已打开日志目录。');
   } catch (error) {
     setFeedback(error.message || '打开日志失败。', true);
   }

@@ -1,13 +1,14 @@
 {
   "name": "jumpserver-windows-web-wrapper",
   "productName": "JumpServer Windows Web Wrapper",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Electron MVP wrapper for JumpServer community Windows web sessions.",
   "main": "src/main/main.js",
   "private": true,
   "type": "commonjs",
   "scripts": {
-    "check": "node --check src/main/main.js && node --check src/main/config-store.js && node --check src/main/logger.js && node --check src/main/url-rules.js && node --check src/main/session-shortcuts.js && node --check src/preload/home-preload.js && node --check src/preload/session-preload.js && node --check src/renderer/home.js",
+    "test": "node --test test/*.test.js",
+    "check": "node --check src/main/main.js && node --check src/main/config-store.js && node --check src/main/credential-store.js && node --check src/main/logger.js && node --check src/main/url-rules.js && node --check src/main/session-shortcuts.js && node --check src/preload/home-preload.js && node --check src/preload/login-form-helpers.js && node --check src/preload/login-preload.js && node --check src/preload/session-preload.js && node --check src/renderer/home.js && node --check src/shared/chinese-punctuation.js",
     "start": "electron .",
     "dev": "electron .",
     "dist": "electron-builder --win portable dir --x64"

@@ -190,6 +190,34 @@ h1 {
   background: rgba(2, 6, 23, 0.62);
 }
 
+.credential-card {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  border-radius: 22px;
+  border: 1px solid rgba(71, 85, 105, 0.85);
+  background: rgba(2, 6, 23, 0.62);
+}
+
+.credential-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.credential-card-header p,
+.credential-hint {
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.credential-card button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
 .mapping-editor-header {
   display: flex;
   justify-content: space-between;
@@ -362,6 +390,10 @@ button:hover {
   }
 
   .mapping-editor-header {
+    flex-direction: column;
+  }
+
+  .credential-card-header {
     flex-direction: column;
   }
 
